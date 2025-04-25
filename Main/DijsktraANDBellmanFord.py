@@ -26,42 +26,41 @@ def dijkstra(graph, start):
     return distances, space_complexity
 
 
-def bellman_ford(graph, vertices, start):
+def bellman_ford(edges, vertices, start):
     distances = {vertex: float('inf') for vertex in vertices}
     distances[start] = 0
-    space_complexity = sys.getsizeof(distances) + sys.getsizeof(graph)
+    space_complexity = sys.getsizeof(distances) + sys.getsizeof(edges)
 
     for _ in range(len(vertices) - 1):
-        for u, v, weight in graph:
+        for u, v, weight in edges:
             if distances[u] != float('inf') and distances[u] + weight < distances[v]:
                 distances[v] = distances[u] + weight
                 space_complexity += sys.getsizeof(distances)
 
-    for u, v, weight in graph:
+    for u, v, weight in edges:
         if distances[u] != float('inf') and distances[u] + weight < distances[v]:
             raise ValueError("Graph contains a negative-weight cycle")
 
     return distances, space_complexity
 
 
-def generate_random_graph_dijkstra(n):
-    graph = {str(i): {} for i in range(n)}
-    for i in range(n):
-        for j in range(i + 1, n):
-            weight = random.randint(1, 10)
-            graph[str(i)][str(j)] = weight
-            graph[str(j)][str(i)] = weight
-    return graph
-
-
-def generate_random_graph_bellman(n):
-    vertices = [str(i) for i in range(n)]
+# Generate one shared graph as a list of edges
+def generate_shared_graph(n):
     edges = []
     for i in range(n):
         for j in range(i + 1, n):
             weight = random.randint(1, 10)
             edges.append((str(i), str(j), weight))
-    return vertices, edges
+            edges.append((str(j), str(i), weight))  # For undirected
+    return edges
+
+
+# Convert shared edges to adjacency list (for Dijkstra)
+def convert_to_adjacency_list(edges, n):
+    graph = {str(i): {} for i in range(n)}
+    for u, v, w in edges:
+        graph[u][v] = w
+    return graph
 
 
 def plot_performance(nodes_list, times_dijkstra, times_bellman):
@@ -77,28 +76,34 @@ def plot_performance(nodes_list, times_dijkstra, times_bellman):
 
 
 def main():
-    nodes_list = [5, 10, 15, 20, 25]  # Number of nodes to test with
+    nodes_list = [5, 10, 15, 20, 25]
     times_dijkstra = []
     times_bellman = []
 
     for num_nodes in nodes_list:
-        graph_dijkstra = generate_random_graph_dijkstra(num_nodes)
-        vertices, graph_bellman = generate_random_graph_bellman(num_nodes)
         start_node = '0'
+        vertices = [str(i) for i in range(num_nodes)]
+        shared_edges = generate_shared_graph(num_nodes)
 
+        graph_dijkstra = convert_to_adjacency_list(shared_edges, num_nodes)
+        graph_bellman = shared_edges
+
+        # Dijkstra Timing
         start_time = time.time()
         dijkstra(graph_dijkstra, start_node)
         times_dijkstra.append(time.time() - start_time)
 
+        # Bellman-Ford Timing
         start_time = time.time()
         bellman_ford(graph_bellman, vertices, start_node)
         times_bellman.append(time.time() - start_time)
 
+    # Print performance results
     print("--- Performance Data ---")
     for i in range(len(nodes_list)):
         print(f"{nodes_list[i]} nodes -> Dijkstra: {times_dijkstra[i]:.6f}s, Bellman-Ford: {times_bellman[i]:.6f}s")
 
-    # Plot the comparison graph
+    # Plot results
     plot_performance(nodes_list, times_dijkstra, times_bellman)
 
 
