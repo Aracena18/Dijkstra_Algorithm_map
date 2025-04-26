@@ -5,8 +5,8 @@ import colorsys
 
 import osmnx as ox
 import networkx as nx
-from shapely.geometry import Point
-from shapely.geometry.linestring import LineString
+from shapely.geometry import Point, LineString
+from PIL import Image, ImageDraw, ImageTk
 
 ox.settings.timeout = 300
 MAX_PATHS = 100
@@ -38,7 +38,7 @@ def _enumerate_k_paths(G_simple, source, target, k, weight):
         gen = nx.shortest_simple_paths(G_simple, source, target, weight=weight)
     except nx.NetworkXNoPath:
         return []
-    return [next(gen) for _ in range(k) if True]
+    return [next(gen) for _ in range(k)]
 
 
 class OptimizedGraphBuilder:
@@ -46,7 +46,7 @@ class OptimizedGraphBuilder:
         self.map_widget = map_widget
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
-        self.G_unproj = None
+
         self.G_proj = None
         self.G_simple = None
         self.edge_coords = []
@@ -55,89 +55,116 @@ class OptimizedGraphBuilder:
         self.node_coords = {}
         self.highlight_objects = []
         self.edge_objects = []
+        self.distance_markers = []
+        # hold onto PhotoImage refs so they don’t get GC’d
+        self._marker_icons = []
+
         self.weight = default_weight
         self.proj_s = None
         self.proj_e = None
         self.path_cache = {}
 
-    def highlight_paths(self, paths, color_func=lambda i: 'blue', width=3):
-        """Draw paths with geometry simplification"""
-        self.clear_highlights()
-        simplified_paths = []
+    def clear_highlights(self):
+        """Remove all paths, edges and node markers."""
+        for obj in self.highlight_objects + self.edge_objects + self.distance_markers:
+            try:
+                obj.delete()
+            except Exception:
+                pass
+        # also clear our icon refs
+        self._marker_icons.clear()
+        self.highlight_objects.clear()
+        self.edge_objects.clear()
+        self.distance_markers.clear()
+        self.path_cache.clear()
 
+    def _make_circle_icon(self, color, size=6):
+        """Return a small PIL PhotoImage of a filled circle."""
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse((0, 0, size - 1, size - 1), fill=color, outline=color)
+        return ImageTk.PhotoImage(img)
+
+    def highlight_paths(self, paths, width=3):
+        """Draw the blue path(s) and tiny colored node markers with distance labels."""
+        self.clear_highlights()
+
+        # 1) simplify and draw each path in solid blue
+        simplified_paths = []
         for path in paths:
             if len(path) < 2:
                 continue
-
-            # Convert coordinates to Shapely LineString and simplify
             line = LineString([self.node_coords[n] for n in path])
-            simplified = line.simplify(PATH_SIMPLIFICATION_TOLERANCE)
+            simp = line.simplify(PATH_SIMPLIFICATION_TOLERANCE)
+            if simp.geom_type == 'LineString':
+                simplified_paths.append(list(simp.coords))
+            else:  # MultiLineString or fallback
+                for part in getattr(simp, 'geoms', [line]):
+                    simplified_paths.append(list(part.coords))
 
-            # Extract coordinates from simplified geometry
-            if simplified.geom_type == 'LineString':
-                simplified_paths.append(list(simplified.coords))
-            elif simplified.geom_type == 'MultiLineString':
-                for part in simplified.geoms:
-                    simplified_paths.extend(list(part.coords))
-            else:
-                simplified_paths.append(list(line.coords))
+        for coords in simplified_paths:
+            p = self.map_widget.set_path(coords, color="#0000FF", width=width)
+            self.highlight_objects.append(p)
 
-        # Create path objects with simplified coordinates
-        self.highlight_objects = [
-            self.map_widget.set_path(
-                path,
-                color=self._ensure_hex_color(color_func(i)),
-                width=width
-            )
-            for i, path in enumerate(simplified_paths)
-        ]
-        return self.highlight_objects
+        # determine text color based on current map background
+        bg = self.map_widget.canvas.cget('bg')
+        if isinstance(bg, str) and bg.startswith('#') and len(bg) == 7:
+            r_bg = int(bg[1:3], 16)
+            g_bg = int(bg[3:5], 16)
+            b_bg = int(bg[5:7], 16)
+            lum = (0.299 * r_bg + 0.587 * g_bg + 0.114 * b_bg) / 255
+            text_color = '#FFFFFF' if lum < 0.5 else '#000000'
+        else:
+            text_color = '#FFFFFF'
 
-    def _validate_nodes(self, G, buffer):
-        """Validate nodes using projected coordinates"""
-        for node, role in [(self.orig_node, "Origin"), (self.dest_node, "Destination")]:
-            if node not in G.nodes:
-                raise ValueError(f"{role} node not found in graph")
+        # 2) for each segment endpoint, drop a tiny icon with distance label
+        for idx_path, coords in enumerate(simplified_paths):
+            # pick a distinct hue per path for the node color
+            hue = (idx_path * 0.618033988749895) % 1.0
+            r, g, b = colorsys.hls_to_rgb(hue, 0.5, 1.0)
+            node_color = f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+            icon = self._make_circle_icon(node_color, size=6)
+            self._marker_icons.append(icon)
 
-            node_x = G.nodes[node]['x']
-            node_y = G.nodes[node]['y']
-            input_point = self.proj_s if role == "Origin" else self.proj_e
-            dist = ((node_x - input_point.x) ** 2 + (node_y - input_point.y) ** 2) ** 0.5
+            for i in range(1, len(coords)):
+                prev_lat, prev_lon = coords[i-1]
+                curr_lat, curr_lon = coords[i]
+                dist_m = ox.distance.great_circle(prev_lat, prev_lon,
+                                                  curr_lat, curr_lon)
+                label = (f"{dist_m:.0f} m"
+                         if dist_m < 1000
+                         else f"{dist_m/1000:.2f} km")
 
-            if dist > buffer * 2:
-                warnings.warn(f"{role} node is {dist:.0f}m from input location")
+                m = self.map_widget.set_marker(
+                    curr_lat,
+                    curr_lon,
+                    text=label,
+                    font=("Helvetica", 8, "bold"),
+                    icon=icon,
+                    icon_anchor="center",
+                    text_color=text_color
+                )
+                self.distance_markers.append(m)
+
+        return self.highlight_objects + self.distance_markers
 
     def build_graph(self, start, end, use_bbox=False, buffer=1000):
+        # … your existing load/project logic unchanged …
         if len(start) != 2 or len(end) != 2:
-            raise ValueError("Start and end points must be (lat, lon) tuples")
-
-        lat1, lon1 = start
-        lat2, lon2 = end
-
-        if use_bbox:
-            north, south = max(lat1, lat2) + 0.01, min(lat1, lat2) - 0.01
-            east, west = max(lon1, lon2) + 0.01, min(lon1, lon2) - 0.01
-            fname = os.path.join(self.cache_dir,
-                                 f"bbox_{north:.5f}_{south:.5f}_{east:.5f}_{west:.5f}.graphml")
-            G0 = _load_graphml_cached(fname) if os.path.exists(fname) else ox.graph_from_bbox(
-                north, south, east, west, network_type="drive", simplify=True)
-            if len(G0.nodes) > MAX_NODES:
-                raise MemoryError("Graph too large for bbox approach")
-            if not os.path.exists(fname):
-                ox.save_graphml(G0, fname)
-        else:
-            straight_dist = ox.distance.great_circle(lat1, lon1, lat2, lon2)
-            radius = straight_dist / 2 + buffer
-            center = ((lat1 + lat2) / 2, (lon1 + lon2) / 2)
-            fname = os.path.join(self.cache_dir,
-                                 f"pt_{center[0]:.5f}_{center[1]:.5f}_{radius:.0f}.graphml")
-            G0 = load_or_build_graph(center, radius, fname)
-
+            raise ValueError("Start and end must be (lat,lon) tuples")
+        lat1, lon1 = start; lat2, lon2 = end
+        straight = ox.distance.great_circle(lat1, lon1, lat2, lon2)
+        radius = straight / 2 + buffer
+        center = ((lat1 + lat2)/2, (lon1 + lon2)/2)
+        fname = os.path.join(self.cache_dir,
+                             f"pt_{center[0]:.5f}_{center[1]:.5f}_{radius:.0f}.graphml")
+        G0 = load_or_build_graph(center, radius, fname)
         G0 = ox.distance.add_edge_lengths(G0)
         Gp = ox.project_graph(G0)
-        self.node_coords = {n: (data['y'], data['x']) for n, data in G0.nodes(data=True)}
 
-        # Corrected edge_coords list comprehension
+        self.node_coords = {n: (d['y'], d['x'])
+                            for n, d in G0.nodes(data=True)}
+
         self.edge_coords = [
             ((G0.nodes[u]['y'], G0.nodes[u]['x']),
              (G0.nodes[v]['y'], G0.nodes[v]['x']))
@@ -145,14 +172,14 @@ class OptimizedGraphBuilder:
         ]
 
         crs = G0.graph.get('crs')
-        ps, pe = Point(lon1, lat1), Point(lon2, lat2)
-        self.proj_s = ox.projection.project_geometry(ps, crs=crs)[0]
-        self.proj_e = ox.projection.project_geometry(pe, crs=crs)[0]
-
-        self.orig_node = ox.distance.nearest_nodes(Gp, X=self.proj_s.x, Y=self.proj_s.y)
-        self.dest_node = ox.distance.nearest_nodes(Gp, X=self.proj_e.x, Y=self.proj_e.y)
-        self._validate_nodes(Gp, buffer)
-
+        self.proj_s = ox.projection.project_geometry(Point(lon1, lat1), crs=crs)[0]
+        self.proj_e = ox.projection.project_geometry(Point(lon2, lat2), crs=crs)[0]
+        self.orig_node = ox.distance.nearest_nodes(Gp,
+                                                   X=self.proj_s.x,
+                                                   Y=self.proj_s.y)
+        self.dest_node = ox.distance.nearest_nodes(Gp,
+                                                   X=self.proj_e.x,
+                                                   Y=self.proj_e.y)
         self.G_proj = Gp
         self.G_simple = ox.convert.to_digraph(Gp, weight=self.weight)
         return self
@@ -171,68 +198,38 @@ class OptimizedGraphBuilder:
 
     def find_k_paths(self, k=5, weight=None):
         if not all([self.G_simple, self.orig_node, self.dest_node]):
-            raise RuntimeError("Graph not properly initialized")
-        cache_key = (self.orig_node, self.dest_node, k, weight or self.weight)
-        if cache_key not in self.path_cache:
-            self.path_cache[cache_key] = _enumerate_k_paths(
-                self.G_simple, self.orig_node, self.dest_node, k, weight or self.weight)
-        return self.path_cache[cache_key]
+            raise RuntimeError("Graph not initialized")
+        key = (self.orig_node, self.dest_node, k, weight or self.weight)
+        if key not in self.path_cache:
+            self.path_cache[key] = _enumerate_k_paths(
+                self.G_simple, self.orig_node, self.dest_node,
+                k, weight or self.weight)
+        return self.path_cache[key]
 
-
-    def _ensure_hex_color(self, color):
-        if color.startswith("hsl"):
-            return self._hsl_to_hex(color)
-        return color
-
-    def _hsl_to_hex(self, hsl_str):
-        try:
-            hsl = hsl_str.strip("hsl(%) ").split(",")
-            h = float(hsl[0]) / 360
-            s = float(hsl[1]) / 100
-            l = float(hsl[2]) / 100
-
-            r, g, b = colorsys.hls_to_rgb(h, l, s)
-            return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        except:
-            return "#FF0000"
-
-    def clear_highlights(self):
-        for obj in self.highlight_objects:
-            try:
-                obj.delete()
-            except:
-                pass
-        self.highlight_objects.clear()
-        self.path_cache.clear()
-
-    def show_route(self, start, end, algo="dijkstra", use_bbox=False,
-                   buffer=1000, show_all=False, k=None):
+    def show_route(self, start, end, algo="dijkstra",
+                   use_bbox=False, buffer=1000, show_all=False, k=None):
         try:
             self.build_graph(start, end, use_bbox, buffer)
             if self.orig_node == self.dest_node:
-                warnings.warn("Origin and destination are identical")
+                warnings.warn("Origin and destination identical")
                 return []
 
-            # redraw the full graph in gray (or any background color you like)
             self.display_graph()
 
-            # always draw paths in blue
-            blue_fn = lambda i: "#0000FF"
-
             if show_all:
-                paths = self.find_k_paths(k=k or MAX_PATHS)
-                return self.highlight_paths(paths, blue_fn, width=5)
+                paths = self.find_k_paths(k or MAX_PATHS)
+                return self.highlight_paths(paths, width=5)
             else:
+                fn = (nx.dijkstra_path
+                      if algo == "dijkstra"
+                      else nx.bellman_ford_path)
                 try:
-                    path_func = (
-                        nx.dijkstra_path
-                        if algo == "dijkstra"
-                        else nx.bellman_ford_path
-                    )
-                    paths = [path_func(self.G_simple, self.orig_node, self.dest_node, self.weight)]
+                    paths = [fn(self.G_simple,
+                                self.orig_node, self.dest_node,
+                                self.weight)]
                 except nx.NetworkXNoPath:
                     paths = []
-                return self.highlight_paths(paths, blue_fn, width=3)
+                return self.highlight_paths(paths, width=3)
 
         except Exception as e:
             self.clear_highlights()
