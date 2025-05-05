@@ -22,6 +22,9 @@ MAX_EDGES_PER_BATCH = 500
 EDGE_BATCH_DELAY = 0.05  # seconds between batches
 EDGE_VISIBILITY_THRESHOLD = 200  # maximum number of edges visible at once
 
+# Define neon green color
+NEON_GREEN = "#39FF14"  # Bright neon green
+
 
 @lru_cache(maxsize=None)
 def _load_graphml_cached(path):
@@ -83,6 +86,13 @@ class OptimizedGraphBuilder:
         self.visible_edges = set()
         self.edge_batch_lock = threading.Lock()
 
+        # Add node ID mapping
+        self.node_id_map = {}  # Maps original node IDs to sequential IDs starting from 1
+        self.inverse_node_map = {}  # Maps sequential IDs back to original node IDs
+
+        # Ensure node 1 is the starting point
+        self.starting_node = None  # Will be set during graph building
+
         # Bind map events for viewport-based rendering
         self._setup_map_bindings()
 
@@ -127,6 +137,8 @@ class OptimizedGraphBuilder:
 
             # 3) If neither is available, we can't proceed:
             else:
+                # If we can't determine the viewport, show all edges
+                self._display_all_edges()
                 return
 
             lat_n, lon_e = northeast
@@ -140,6 +152,13 @@ class OptimizedGraphBuilder:
                         min(lon1, lon2) <= lon_e and max(lon1, lon2) >= lon_w):
                     visible.add(edge_id)
 
+            # Ensure we're showing a minimum number of edges for better visualization
+            # If very few edges are visible, show more edges to ensure graph connectivity is visible
+            if len(visible) < 20 and self.edge_coords:
+                # Add more edges to make sure graph structure is visible
+                self._display_all_edges()
+                return
+
             to_add = visible - self.visible_edges
             to_remove = self.visible_edges - visible
 
@@ -149,6 +168,36 @@ class OptimizedGraphBuilder:
 
         except Exception as e:
             warnings.warn(f"Error updating visible edges: {e}")
+            # Fallback to displaying all edges
+            self._display_all_edges()
+
+    def _display_all_edges(self):
+        """Fallback method to display all edges when viewport-based rendering fails"""
+        with self.edge_batch_lock:
+            for i, obj in enumerate(self.edge_objects):
+                if obj:
+                    try:
+                        obj.delete()
+                    except Exception:
+                        pass
+            self.edge_objects = [None] * len(self.edge_coords)
+
+            # Limit to a reasonable number of edges to avoid performance issues
+            max_edges = min(len(self.edge_coords), 1000)
+            step = max(1, len(self.edge_coords) // max_edges)
+
+            for edge_id in range(0, len(self.edge_coords), step):
+                if edge_id < len(self.edge_coords):
+                    u, v = self.edge_coords[edge_id]
+                    try:
+                        # Use neon green for all edges
+                        path_obj = self.map_widget.set_path([u, v], color=NEON_GREEN, width=1)
+                        if edge_id >= len(self.edge_objects):
+                            self.edge_objects.extend([None] * (edge_id - len(self.edge_objects) + 1))
+                        self.edge_objects[edge_id] = path_obj
+                        self.visible_edges.add(edge_id)
+                    except Exception as e:
+                        warnings.warn(f"Error drawing edge {edge_id}: {e}")
 
     def _update_edge_visibility(self, to_add, to_remove):
         """Update which edges are displayed on the map"""
@@ -168,7 +217,8 @@ class OptimizedGraphBuilder:
                     try:
                         if edge_id >= len(self.edge_objects):
                             self.edge_objects.extend([None] * (edge_id - len(self.edge_objects) + 1))
-                        path_obj = self.map_widget.set_path([u, v], color='gray', width=1)
+                        # Use neon green for all edges
+                        path_obj = self.map_widget.set_path([u, v], color=NEON_GREEN, width=1)
                         self.edge_objects[edge_id] = path_obj
                     except Exception as e:
                         warnings.warn(f"Error adding edge {edge_id}: {e}")
@@ -282,8 +332,9 @@ class OptimizedGraphBuilder:
             path = paths[0]  # Use the first path for node labels
             for node in path:
                 lat, lon = self.node_coords[node]
-                # Create a node label with its ID
-                node_label = f"Node {node}"
+                # Create a node label with its sequential ID
+                seq_id = self.node_id_map.get(node, 0)
+                node_label = f"Node {seq_id}"
                 m = self.map_widget.set_marker(
                     lat, lon,
                     text=node_label,
@@ -318,8 +369,11 @@ class OptimizedGraphBuilder:
         else:
             text_color = '#FFFFFF'
 
-        # Create a smaller icon for nodes
+        # Create a larger icon for the starting node (Node 1)
+        start_node_icon = self._make_circle_icon("red", size=12)
+        # Create a smaller icon for other nodes
         node_icon = self._make_circle_icon("orange", size=8)
+        self._marker_icons.append(start_node_icon)
         self._marker_icons.append(node_icon)
 
         # Limit the number of nodes to display to avoid performance issues
@@ -339,15 +393,27 @@ class OptimizedGraphBuilder:
             # If we can't get bounds, limit to a reasonable number
             visible_nodes = set(list(self.node_coords.keys())[:100])
 
-        # Add node markers with labels
+        # Ensure the starting node (Node 1) is always included
+        if self.starting_node and self.starting_node in self.node_coords:
+            visible_nodes.add(self.starting_node)
+
+        # Add node markers with sequential labels
         for node in visible_nodes:
             lat, lon = self.node_coords[node]
+            seq_id = self.node_id_map.get(node, 0)
+
+            # Determine if this is the starting node (Node 1)
+            is_starting_node = (seq_id == 1)
+
+            font_size = 10 if is_starting_node else 8
+            icon = start_node_icon if is_starting_node else node_icon
+
             m = self.map_widget.set_marker(
                 lat, lon,
-                text=f"Node {node}",
-                font=("Helvetica", 8),
+                text=f"Node {seq_id}",
+                font=("Helvetica", font_size, "bold" if is_starting_node else "normal"),
                 text_color=text_color,
-                icon=node_icon,
+                icon=icon,
                 icon_anchor="center"
             )
             self.node_labels.append(m)
@@ -373,6 +439,26 @@ class OptimizedGraphBuilder:
         self.node_coords = {n: (d['y'], d['x'])
                             for n, d in G0.nodes(data=True)}
 
+        # Find the node closest to the start point - this will be assigned ID 1
+        self.proj_s = ox.projection.project_geometry(Point(lon1, lat1), crs=G0.graph.get('crs'))[0]
+        orig_node = ox.distance.nearest_nodes(Gp, X=self.proj_s.x, Y=self.proj_s.y)
+
+        # Create sequential node ID mapping starting from 1, with orig_node as ID 1
+        nodes = list(G0.nodes())
+        # Remove orig_node from the list if it exists
+        if orig_node in nodes:
+            nodes.remove(orig_node)
+        # Create the mapping with orig_node as ID 1
+        self.node_id_map = {orig_node: 1}
+        # Add the rest of the nodes with sequential IDs starting from 2
+        self.node_id_map.update({node: i + 2 for i, node in enumerate(nodes)})
+
+        # Create inverse mapping (from sequential ID to original node ID)
+        self.inverse_node_map = {v: k for k, v in self.node_id_map.items()}
+
+        # Keep track of the starting node
+        self.starting_node = orig_node
+
         self.edge_coords = [
             ((G0.nodes[u]['y'], G0.nodes[u]['x']),
              (G0.nodes[v]['y'], G0.nodes[v]['x']))
@@ -393,7 +479,8 @@ class OptimizedGraphBuilder:
         self.G_proj = Gp
         self.G_simple = ox.convert.to_digraph(Gp, weight=self.weight)
 
-        self._update_visible_edges()
+        # Force display all edges initially for better visualization
+        self._display_all_edges()
 
         return self
 
@@ -419,7 +506,8 @@ class OptimizedGraphBuilder:
                     try:
                         if edge_id >= len(self.edge_objects):
                             self.edge_objects.extend([None] * (edge_id - len(self.edge_objects) + 1))
-                        path_obj = self.map_widget.set_path([u, v], color='gray', width=1)
+                        # Use neon green for all edges
+                        path_obj = self.map_widget.set_path([u, v], color=NEON_GREEN, width=1)
                         self.edge_objects[edge_id] = path_obj
                     except Exception:
                         pass
@@ -427,7 +515,7 @@ class OptimizedGraphBuilder:
         if self.loading_edges and not self.edge_queue.empty():
             self.map_widget.after(int(EDGE_BATCH_DELAY * 1000), self._process_edge_queue)
 
-    def display_graph(self, color='gray', width=1):
+    def display_graph(self, color=NEON_GREEN, width=1):
         with self.edge_batch_lock:
             for i, obj in enumerate(self.edge_objects):
                 if obj:
@@ -439,10 +527,14 @@ class OptimizedGraphBuilder:
             self.visible_edges.clear()
 
         self.loading_edges = True
-        self._update_visible_edges()
 
+        # Initially force display all edges
+        self._display_all_edges()
+
+        # Queue remaining edges for progressive loading if needed
         for edge_id in range(len(self.edge_coords)):
-            self.edge_queue.put(edge_id)
+            if edge_id not in self.visible_edges:
+                self.edge_queue.put(edge_id)
 
         self._process_edge_queue()
 
@@ -473,8 +565,8 @@ class OptimizedGraphBuilder:
         # Reconstruct path
         path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
 
-        # Generate explanation
-        explanation = PathAlgorithms.format_steps_explanation(
+        # Generate explanation with sequential node IDs
+        explanation = self._format_steps_explanation_with_seq_ids(
             self.G_simple, steps, prev, self.orig_node, self.dest_node)
 
         # Store results
@@ -491,7 +583,6 @@ class OptimizedGraphBuilder:
             self.highlight_paths([path])
 
         return path, explanation
-
 
     def run_bellman_ford(self):
         """Run Bellman-Ford algorithm and format the explanation"""
@@ -510,8 +601,8 @@ class OptimizedGraphBuilder:
             # Reconstruct path
             path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
 
-            # Generate explanation
-            explanation = PathAlgorithms.format_steps_explanation(
+            # Generate explanation with sequential node IDs
+            explanation = self._format_steps_explanation_with_seq_ids(
                 self.G_simple, steps, prev, self.orig_node, self.dest_node)
 
         # Store results
@@ -528,3 +619,48 @@ class OptimizedGraphBuilder:
             self.highlight_paths([path])
 
         return path, explanation
+
+    def _format_steps_explanation_with_seq_ids(self, G, steps, prev, source, target):
+        """Format algorithm steps with sequential node IDs for better readability"""
+        if not steps:
+            return "No steps recorded during algorithm execution."
+
+        explanation = []
+        explanation.append(f"Starting from Node {self.node_id_map.get(source, '?')} (original ID: {source})")
+
+        for step_num, step in enumerate(steps, 1):
+            if isinstance(step, dict):  # Distance update
+                step_details = []
+                for node, (dist, prev_node) in step.items():
+                    seq_node_id = self.node_id_map.get(node, '?')
+                    seq_prev_id = self.node_id_map.get(prev_node, '?') if prev_node is not None else 'None'
+
+                    step_details.append(
+                        f"Updated Node {seq_node_id}: distance = {dist:.2f}, previous = Node {seq_prev_id}")
+
+                explanation.append(f"Step {step_num}:")
+                explanation.extend([f"  {detail}" for detail in sorted(step_details)])
+            elif isinstance(step, tuple) and len(step) == 3:  # Node selection (Dijkstra)
+                node, dist, _ = step
+                seq_node_id = self.node_id_map.get(node, '?')
+                explanation.append(f"Step {step_num}: Selected Node {seq_node_id} with distance {dist:.2f}")
+
+        # Reconstruct the path using sequential IDs
+        if target in prev or target == source:
+            path = []
+            at = target
+            while at is not None:
+                path.append(at)
+                at = prev.get(at)
+            path.reverse()
+
+            path_str = " → ".join([f"Node {self.node_id_map.get(n, '?')}" for n in path])
+            total_dist = sum(G[u][v].get(self.weight, 0) for u, v in zip(path[:-1], path[1:]))
+
+            explanation.append(f"\nFinal shortest path ({total_dist:.2f} units):")
+            explanation.append(path_str)
+        else:
+            explanation.append(
+                f"\nNo path found from Node {self.node_id_map.get(source, '?')} to Node {self.node_id_map.get(target, '?')}")
+
+        return "\n".join(explanation)
