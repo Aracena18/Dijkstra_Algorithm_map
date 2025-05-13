@@ -15,7 +15,7 @@ from Main.Algorithms.pathAlgorithms import PathAlgorithms
 
 ox.settings.timeout = 300
 MAX_PATHS = 100
-MAX_NODES = 10000
+MAX_NODES = 100
 PATH_SIMPLIFICATION_TOLERANCE = 0.0001  # Degrees
 # Viewport-based rendering settings
 MAX_EDGES_PER_BATCH = 500
@@ -24,7 +24,7 @@ EDGE_VISIBILITY_THRESHOLD = 200  # maximum number of edges visible at once
 
 # Enhanced visualization settings
 DEFAULT_EDGE_COLOR = '#3388FF'  # Brighter blue for default edges
-HIGHLIGHT_EDGE_COLOR = '#FF5500'  # Bright orange for highlighted paths
+HIGHLIGHT_EDGE_COLOR = '#39FF14'  # Bright orange for highlighted paths
 NODE_SIZE = 8  # Size of node markers
 NODE_COLOR = '#FF3333'  # Bright red for nodes
 NODE_OUTLINE_COLOR = '#FFFFFF'  # White outline for nodes
@@ -109,6 +109,10 @@ class OptimizedGraphBuilder:
             'unclassified': '#666666',  # Dark gray
             'default': DEFAULT_EDGE_COLOR  # Default blue
         }
+
+        # Add node renaming dictionary
+        self.node_id_map = {}  # Maps original OSM IDs to sequential IDs
+        self.reverse_node_id_map = {}  # Maps sequential IDs back to OSM IDs
 
         # Bind map events for viewport-based rendering
         self._setup_map_bindings()
@@ -337,15 +341,19 @@ class OptimizedGraphBuilder:
                 # Choose icon based on position in path
                 if i == 0:  # Origin
                     icon = origin_icon
-                    node_label = f"START (Node {node})"
+                    # Use sequential ID for the label
+                    seq_id = self.node_id_map.get(node, node)
+                    node_label = f"START (Node {seq_id})"
                 elif i == len(path) - 1:  # Destination
                     icon = dest_icon
-                    node_label = f"END (Node {node})"
+                    seq_id = self.node_id_map.get(node, node)
+                    node_label = f"END (Node {seq_id})"
                 else:
                     # For intermediate nodes, use a standard icon
                     icon = self._make_circle_icon(NODE_COLOR)
                     self._marker_icons.append(icon)
-                    node_label = f"Node {node}"
+                    seq_id = self.node_id_map.get(node, node)
+                    node_label = f"Node {seq_id}"
 
                 m = self.map_widget.set_marker(
                     lat, lon,
@@ -447,13 +455,16 @@ class OptimizedGraphBuilder:
             # Select appropriate icon
             if node == self.orig_node:
                 icon = origin_icon
-                label = f"START (Node {node})"
+                seq_id = self.node_id_map.get(node, node)
+                label = f"START (Node {seq_id})"
             elif node == self.dest_node:
                 icon = dest_icon
-                label = f"END (Node {node})"
+                seq_id = self.node_id_map.get(node, node)
+                label = f"END (Node {seq_id})"
             else:
                 icon = node_icon
-                label = f"Node {node}"
+                seq_id = self.node_id_map.get(node, node)
+                label = f"Node {seq_id}"
 
             m = self.map_widget.set_marker(
                 lat, lon,
@@ -466,6 +477,63 @@ class OptimizedGraphBuilder:
             self.node_labels.append(m)
 
         return self.node_labels
+
+    def _create_sequential_node_ids(self, path=None):
+        """
+        Create a mapping of original node IDs to randomized numbers.
+        The origin node is always assigned ID 1, but other nodes get randomized IDs.
+        If a path is provided, prioritize nodes along that path to be numbered.
+        """
+        import random
+
+        # Reset the mapping dictionaries
+        self.node_id_map = {}
+        self.reverse_node_id_map = {}
+
+        # Track nodes that have been assigned IDs
+        path_nodes = set()
+
+        # Collect all nodes that need IDs
+        all_nodes = list(self.node_coords.keys())
+
+        # Generate a list of random unique IDs (excluding 1 which is reserved for origin)
+        max_id = len(all_nodes) + 1  # +1 to ensure we have enough IDs
+        random_ids = list(range(2, max_id + 1))
+        random.shuffle(random_ids)
+
+        # First, assign ID 1 to origin
+        if self.orig_node:
+            self.node_id_map[self.orig_node] = 1
+            self.reverse_node_id_map[1] = self.orig_node
+            path_nodes.add(self.orig_node)
+
+        # If path is provided, prioritize path nodes (but with randomized IDs)
+        path_nodes_list = []
+        if path:
+            for node in path:
+                if node != self.orig_node and node not in path_nodes:
+                    path_nodes_list.append(node)
+                    path_nodes.add(node)
+
+        # Handle destination node specially (include in path if it exists)
+        if self.dest_node and self.dest_node != self.orig_node and self.dest_node not in path_nodes:
+            path_nodes_list.append(self.dest_node)
+            path_nodes.add(self.dest_node)
+
+        # Assign random IDs to path nodes first (including destination)
+        for node in path_nodes_list:
+            rand_id = random_ids.pop()
+            self.node_id_map[node] = rand_id
+            self.reverse_node_id_map[rand_id] = node
+
+        # Then assign random IDs to all remaining nodes
+        for node in all_nodes:
+            if node not in self.node_id_map:
+                rand_id = random_ids.pop()
+                self.node_id_map[node] = rand_id
+                self.reverse_node_id_map[rand_id] = node
+
+        return self.node_id_map
 
     def build_graph(self, start, end, use_bbox=False, buffer=1000):
         self.clear_highlights()
@@ -518,6 +586,9 @@ class OptimizedGraphBuilder:
                                                    Y=self.proj_e.y)
         self.G_proj = Gp
         self.G_simple = ox.convert.to_digraph(Gp, weight=self.weight)
+
+        # Create initial sequential node IDs
+        self._create_sequential_node_ids()
 
         self._update_visible_edges()
 
@@ -611,9 +682,14 @@ class OptimizedGraphBuilder:
         # Reconstruct path
         path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
 
-        # Generate explanation
+        # Create sequential node IDs for the path
+        if path:
+            self._create_sequential_node_ids(path)
+
+        # Generate explanation with node ID map
         explanation = PathAlgorithms.format_steps_explanation(
-            self.G_simple, steps, prev, self.orig_node, self.dest_node)
+            self.G_simple, steps, prev, self.orig_node, self.dest_node,
+            node_id_map=self.node_id_map)
 
         # Store results
         self.algorithm_results["dijkstra"] = {
@@ -647,9 +723,14 @@ class OptimizedGraphBuilder:
             # Reconstruct path
             path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
 
-            # Generate explanation
+            # Create sequential node IDs for the path
+            if path:
+                self._create_sequential_node_ids(path)
+
+            # Generate explanation with node ID map
             explanation = PathAlgorithms.format_steps_explanation(
-                self.G_simple, steps, prev, self.orig_node, self.dest_node)
+                self.G_simple, steps, prev, self.orig_node, self.dest_node,
+                node_id_map=self.node_id_map)
 
         # Store results
         self.algorithm_results["bellman_ford"] = {

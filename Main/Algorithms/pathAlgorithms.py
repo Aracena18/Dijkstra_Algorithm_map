@@ -70,7 +70,8 @@ class PathAlgorithms:
                 new_dist = dist[current] + edge_weight
 
                 # Record neighbor examination
-                steps.append(("check_neighbor", current, neighbor, dist[neighbor], new_dist, edge_weight, dist[current]))
+                steps.append(
+                    ("check_neighbor", current, neighbor, dist[neighbor], new_dist, edge_weight, dist[current]))
 
                 # Update if shorter path found
                 if new_dist < dist[neighbor]:
@@ -106,13 +107,19 @@ class PathAlgorithms:
         # Track steps for visualization
         steps = []
 
+        # Get all edges in the graph (ensuring we consider all possible edges)
+        edges = []
+        for u in G.nodes():
+            for v in G.successors(u):
+                edges.append((u, v))
+
         # Main algorithm
         num_nodes = len(G.nodes())
         for i in range(num_nodes - 1):
             steps.append(("iteration", i + 1))
             updated = False
 
-            for u, v in G.edges():
+            for u, v in edges:
                 edge_data = G.get_edge_data(u, v)
                 edge_weight = edge_data.get(weight, 1.0)
 
@@ -129,7 +136,7 @@ class PathAlgorithms:
                 break
 
         # Check for negative cycles
-        for u, v in G.edges():
+        for u, v in edges:
             edge_data = G.get_edge_data(u, v)
             edge_weight = edge_data.get(weight, 1.0)
 
@@ -165,7 +172,7 @@ class PathAlgorithms:
         return list(reversed(path))
 
     @staticmethod
-    def format_steps_explanation(G, steps: List[Tuple], prev: Dict, source: Any, target: Any) -> str:
+    def format_steps_explanation(G, steps: List[Tuple], prev: Dict, source: Any, target: Any, node_id_map=None) -> str:
         """
         Format algorithm steps into human-readable explanation.
 
@@ -175,11 +182,19 @@ class PathAlgorithms:
             prev: Dictionary of predecessors
             source: Source node
             target: Target node
+            node_id_map: Optional mapping of original node IDs to sequential IDs
 
         Returns:
             Formatted explanation string
         """
-        explanation = f"Finding shortest path from Node {source} to Node {target}\n"
+
+        # Use the node_id_map if provided, otherwise use the node ID directly
+        def get_node_id(node):
+            if node_id_map and node in node_id_map:
+                return node_id_map[node]
+            return node
+
+        explanation = f"Finding shortest path from Node {get_node_id(source)} to Node {get_node_id(target)}\n"
         explanation += "=" * 60 + "\n\n"
 
         # Keep track of current algorithm state for better explanations
@@ -192,48 +207,49 @@ class PathAlgorithms:
 
             if step_type == "examine":
                 node, current_dist = step[1], step[2]
-                explanation += f"📌 Examining Node {node} (current shortest distance: {current_dist:.2f})\n"
+                explanation += f"📌 Examining Node {get_node_id(node)} (current shortest distance: {current_dist:.2f})\n"
 
             elif step_type == "visit":
                 node = step[1]
-                explanation += f"✅ Marking Node {node} as visited\n"
+                explanation += f"✅ Marking Node {get_node_id(node)} as visited\n"
                 visited_nodes.add(node)
-                explanation += f"   Visited nodes so far: {', '.join([f'Node {n}' for n in sorted(visited_nodes)])}\n"
+                explanation += f"   Visited nodes so far: {', '.join([f'Node {get_node_id(n)}' for n in sorted(visited_nodes)])}\n"
 
             elif step_type == "skip":
                 node = step[1]
-                explanation += f"⏭️ Skipping already visited Node {node}\n"
+                explanation += f"⏭️ Skipping already visited Node {get_node_id(node)}\n"
 
             elif step_type == "check_neighbor":
-                current, neighbor, old_dist, new_dist, edge_weight, current_node_dist = step[1], step[2], step[3], step[4], step[5], step[6]
+                current, neighbor, old_dist, new_dist, edge_weight, current_node_dist = step[1], step[2], step[3], step[
+                    4], step[5], step[6]
                 if old_dist == float('infinity'):
                     old_dist_str = "∞"
                 else:
                     old_dist_str = f"{old_dist:.2f}"
 
-                explanation += f"  👉 Analyzing edge: Node {current} → Node {neighbor} (weight: {edge_weight:.2f})\n"
-                explanation += f"     • Current distance to Node {neighbor}: {old_dist_str}\n"
-                explanation += f"     • Potential new distance via Node {current}: {new_dist:.2f}\n"
-                explanation += f"       (= distance to Node {current}: {current_node_dist:.2f} + edge weight: {edge_weight:.2f})\n"
+                explanation += f"  👉 Analyzing edge: Node {get_node_id(current)} → Node {get_node_id(neighbor)} (weight: {edge_weight:.2f})\n"
+                explanation += f"     • Current distance to Node {get_node_id(neighbor)}: {old_dist_str}\n"
+                explanation += f"     • Potential new distance via Node {get_node_id(current)}: {new_dist:.2f}\n"
+                explanation += f"       (= distance to Node {get_node_id(current)}: {current_node_dist:.2f} + edge weight: {edge_weight:.2f})\n"
 
             elif step_type == "update":
                 node, dist, prev_node = step[1], step[2], step[3]
                 current_distances[node] = dist
                 current_predecessors[node] = prev_node
 
-                explanation += f"  ✨ IMPROVED PATH FOUND to Node {node}:\n"
+                explanation += f"  ✨ IMPROVED PATH FOUND to Node {get_node_id(node)}:\n"
                 explanation += f"     • Updated distance: {dist:.2f}\n"
-                explanation += f"     • New best predecessor: Node {prev_node}\n"
+                explanation += f"     • New best predecessor: Node {get_node_id(prev_node)}\n"
 
                 # Show the current best path to this node
                 path_to_node = PathAlgorithms.reconstruct_path(current_predecessors, source, node)
-                path_str = " → ".join([f"Node {n}" for n in path_to_node])
+                path_str = " → ".join([f"Node {get_node_id(n)}" for n in path_to_node])
                 explanation += f"     • Current best path: {path_str}\n"
 
             elif step_type == "target_reached":
                 node = step[1]
-                explanation += f"\n🎯 TARGET REACHED! Node {node} has been processed.\n"
-                explanation += f"   We can terminate early as we now have the optimal path from {source} to {target}.\n"
+                explanation += f"\n🎯 TARGET REACHED! Node {get_node_id(node)} has been processed.\n"
+                explanation += f"   We can terminate early as we now have the optimal path from {get_node_id(source)} to {get_node_id(target)}.\n"
 
             elif step_type == "iteration":
                 iteration = step[1]
@@ -244,11 +260,11 @@ class PathAlgorithms:
                 dist_u_str = f"{dist_u:.2f}" if dist_u != float('infinity') else "∞"
                 dist_v_str = f"{dist_v:.2f}" if dist_v != float('infinity') else "∞"
 
-                explanation += f"  👉 Checking edge: Node {u} → Node {v} (weight: {weight:.2f})\n"
-                explanation += f"     • Current distance to Node {u}: {dist_u_str}\n"
-                explanation += f"     • Current distance to Node {v}: {dist_v_str}\n"
+                explanation += f"  👉 Checking edge: Node {get_node_id(u)} → Node {get_node_id(v)} (weight: {weight:.2f})\n"
+                explanation += f"     • Current distance to Node {get_node_id(u)}: {dist_u_str}\n"
+                explanation += f"     • Current distance to Node {get_node_id(v)}: {dist_v_str}\n"
                 if dist_u != float('infinity'):
-                    explanation += f"     • Potential new distance to Node {v}: {dist_u + weight:.2f}\n"
+                    explanation += f"     • Potential new distance to Node {get_node_id(v)}: {dist_u + weight:.2f}\n"
 
             elif step_type == "early_termination":
                 iteration = step[1]
@@ -257,7 +273,7 @@ class PathAlgorithms:
 
             elif step_type == "negative_cycle":
                 u, v = step[1], step[2]
-                explanation += f"\n⚠️ NEGATIVE CYCLE DETECTED involving edge Node {u} → Node {v}\n"
+                explanation += f"\n⚠️ NEGATIVE CYCLE DETECTED involving edge Node {get_node_id(u)} → Node {get_node_id(v)}\n"
                 explanation += "    The shortest path is undefined as it can be made arbitrarily small.\n"
 
         # Construct final path
@@ -266,7 +282,7 @@ class PathAlgorithms:
         explanation += "\n" + "=" * 60 + "\n"
         if path:
             explanation += "🏁 FINAL RESULT:\n"
-            path_str = " → ".join([f"Node {node}" for node in path])
+            path_str = " → ".join([f"Node {get_node_id(node)}" for node in path])
             explanation += f"Shortest path: {path_str}\n"
 
             # Calculate total distance and show individual edge contributions
@@ -277,7 +293,7 @@ class PathAlgorithms:
                 edge_data = G.get_edge_data(u, v)
                 weight = edge_data.get('length', 1.0)
                 total_dist += weight
-                explanation += f"  • Node {u} → Node {v}: {weight:.2f}\n"
+                explanation += f"  • Node {get_node_id(u)} → Node {get_node_id(v)}: {weight:.2f}\n"
 
             explanation += f"\nTotal distance: {total_dist:.2f}\n"
         else:
