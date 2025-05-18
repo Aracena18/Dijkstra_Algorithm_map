@@ -4,6 +4,7 @@ from tkinter import TclError
 from Main.autocomplete import AutocompleteEntry
 from Main.locate import LocationHandler
 from Main.graph_builder import OptimizedGraphBuilder
+from Main.Algorithms.algorithmvisualizer import AlgorithmVisualizer  # New import
 
 
 class MapViewApp:
@@ -69,6 +70,8 @@ class MapViewApp:
 
         # Track application state
         self.graph_loaded = False
+        self.dijkstra_results = None
+        self.bellman_ford_results = None
 
         # Initialize UI
         current_theme = self.theme_var.get()
@@ -78,6 +81,9 @@ class MapViewApp:
         # Initialize services (after map_viewer exists)
         self.graph_builder = OptimizedGraphBuilder(self.map_viewer)
         self.locator = LocationHandler(self.map_viewer, self.text_output)
+
+        # Initialize algorithm visualizer
+        self.algorithm_visualizer = AlgorithmVisualizer(self.main, self.theme_var, self.default_colors)
 
     def build_widgets(self):
         """Build all application widgets using a grid layout"""
@@ -187,6 +193,7 @@ class MapViewApp:
             self.run_algorithm_button,
             self.button_dijkstra,
             self.button_bellman,
+            self.button_compare,  # Added the new compare button
             self.search_from_button,
             self.search_to_button,
             self.show_graph_button
@@ -355,6 +362,20 @@ class MapViewApp:
         )
         self.button_bellman.pack(fill="x", pady=5)
 
+        # NEW: Compare algorithms button
+        self.button_compare = ctk.CTkButton(
+            master=self.button_frame,
+            text="Compare Algorithms",
+            width=150,
+            height=40,
+            font=self.default_font,
+            fg_color=config["button"],
+            hover_color=config["hover"],
+            command=self.compare_algorithms,
+            state="disabled"  # Initially disabled
+        )
+        self.button_compare.pack(fill="x", pady=5)
+
         # Action buttons
         action_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
         action_frame.pack(fill="x", pady=(20, 0))
@@ -464,6 +485,12 @@ class MapViewApp:
             # Enable algorithm selection buttons
             self.button_dijkstra.configure(state="normal")
             self.button_bellman.configure(state="normal")
+
+            # Reset results when a new graph is loaded
+            self.dijkstra_results = None
+            self.bellman_ford_results = None
+            self.button_compare.configure(state="disabled")
+
         except Exception as e:
             self.text_output.insert("end", f"Error building graph: {str(e)}\n")
             self.graph_loaded = False
@@ -487,10 +514,12 @@ class MapViewApp:
         try:
             # Run the selected algorithm
             if algo == "dijkstra":
-                path, explanation = self.graph_builder.run_dijkstra()
+                path, explanation, details = self.graph_builder.run_dijkstra()
+                self.dijkstra_results = details
             elif algo == "bellman-ford":
                 # Fixed method name (it was defined but not called correctly)
-                path, explanation = self.graph_builder.run_bellman_ford()
+                path, explanation, details = self.graph_builder.run_bellman_ford()
+                self.bellman_ford_results = details
 
             # Insert the step-by-step explanation
             if explanation:
@@ -498,8 +527,28 @@ class MapViewApp:
             else:
                 self.text_output.insert("end", "No path found or no explanation available.\n")
 
+            # Enable comparison button if both algorithms have been run
+            if self.dijkstra_results and self.bellman_ford_results:
+                self.button_compare.configure(state="normal")
+
         except Exception as e:
             self.text_output.insert("end", f"Error running algorithm: {str(e)}\n")
+
+    def compare_algorithms(self):
+        """Open the comparison visualization window"""
+        if not (self.dijkstra_results and self.bellman_ford_results):
+            self.text_output.delete("1.0", "end")
+            self.text_output.insert("end", "⚠️ Run both algorithms first to compare results.\n")
+            return
+
+        # Show the comparison visualization
+        self.algorithm_visualizer.show_comparison(
+            self.graph_builder.G_simple,  # Changed from G to G_simple
+            self.dijkstra_results,  # Dijkstra results
+            self.bellman_ford_results,  # Bellman-Ford results
+            self.locator.markers.get("FROM").position,  # Source coordinates
+            self.locator.markers.get("TO").position,  # Target coordinates
+        )
 
     def search_from_location(self):
         """Handle 'From' location search"""
@@ -508,7 +557,10 @@ class MapViewApp:
         self.graph_loaded = False
         self.button_dijkstra.configure(state="disabled")
         self.button_bellman.configure(state="disabled")
+        self.button_compare.configure(state="disabled")
         self.run_algorithm_button.configure(state="disabled")
+        self.dijkstra_results = None
+        self.bellman_ford_results = None
 
     def search_to_location(self):
         """Handle 'To' location search"""
@@ -517,7 +569,10 @@ class MapViewApp:
         self.graph_loaded = False
         self.button_dijkstra.configure(state="disabled")
         self.button_bellman.configure(state="disabled")
+        self.button_compare.configure(state="disabled")
         self.run_algorithm_button.configure(state="disabled")
+        self.dijkstra_results = None
+        self.bellman_ford_results = None
 
     def on_closing(self):
         """Handle window close event"""

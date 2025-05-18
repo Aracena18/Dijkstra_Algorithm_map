@@ -15,7 +15,7 @@ from Main.Algorithms.pathAlgorithms import PathAlgorithms
 
 ox.settings.timeout = 300
 MAX_PATHS = 100
-MAX_NODES = 100
+MAX_NODES = 10000
 PATH_SIMPLIFICATION_TOLERANCE = 0.0001  # Degrees
 # Viewport-based rendering settings
 MAX_EDGES_PER_BATCH = 500
@@ -671,55 +671,31 @@ class OptimizedGraphBuilder:
         return self.path_cache[key]
 
     def run_dijkstra(self):
-        """Run Dijkstra's algorithm and format the explanation"""
+        """
+        Run Dijkstra's algorithm and format the explanation.
+
+        Returns:
+            Tuple containing:
+                - path: List of nodes in the shortest path
+                - explanation: Text explanation of the algorithm steps
+                - details: Dictionary with detailed algorithm results for visualization
+        """
         if not all([self.G_simple, self.orig_node, self.dest_node]):
             raise RuntimeError("Graph not initialized")
 
-        # Run Dijkstra with step tracking
-        dist, prev, steps = PathAlgorithms.dijkstra(
-            self.G_simple, self.orig_node, self.dest_node, self.weight)
+        try:
+            # Run Dijkstra with step tracking
+            result = PathAlgorithms.dijkstra(
+                self.G_simple, self.orig_node, self.dest_node, self.weight)
 
-        # Reconstruct path
-        path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
+            # Unpack the returned values - handle both old and new return format
+            if len(result) == 4:
+                dist, prev, steps, execution_time = result
+            else:
+                # Handle the case where the old function is still being used
+                dist, prev, steps = result
+                execution_time = None
 
-        # Create sequential node IDs for the path
-        if path:
-            self._create_sequential_node_ids(path)
-
-        # Generate explanation with node ID map
-        explanation = PathAlgorithms.format_steps_explanation(
-            self.G_simple, steps, prev, self.orig_node, self.dest_node,
-            node_id_map=self.node_id_map)
-
-        # Store results
-        self.algorithm_results["dijkstra"] = {
-            "path": path,
-            "dist": dist,
-            "prev": prev,
-            "steps": steps,
-            "explanation": explanation
-        }
-
-        # Highlight the path with enhanced styling
-        if path:
-            self.highlight_paths([path], width=HIGHLIGHT_EDGE_WIDTH)
-
-        return path, explanation
-
-    def run_bellman_ford(self):
-        """Run Bellman-Ford algorithm and format the explanation"""
-        if not all([self.G_simple, self.orig_node, self.dest_node]):
-            raise RuntimeError("Graph not initialized")
-
-        # Run Bellman-Ford with step tracking
-        dist, prev, steps = PathAlgorithms.bellman_ford(
-            self.G_simple, self.orig_node, self.dest_node, self.weight)
-
-        # Check if a path was found (could be None if negative cycle was detected)
-        if dist is None or prev is None:
-            explanation = "Negative cycle detected in the graph. Cannot find shortest path."
-            path = []
-        else:
             # Reconstruct path
             path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
 
@@ -727,22 +703,189 @@ class OptimizedGraphBuilder:
             if path:
                 self._create_sequential_node_ids(path)
 
-            # Generate explanation with node ID map
+            # Generate explanation with node ID map and execution time
             explanation = PathAlgorithms.format_steps_explanation(
                 self.G_simple, steps, prev, self.orig_node, self.dest_node,
-                node_id_map=self.node_id_map)
+                node_id_map=self.node_id_map, execution_time=execution_time)
 
-        # Store results
-        self.algorithm_results["bellman_ford"] = {
-            "path": path,
-            "dist": dist,
-            "prev": prev,
-            "steps": steps,
-            "explanation": explanation
-        }
+            # Store results
+            self.algorithm_results["dijkstra"] = {
+                "path": path,
+                "dist": dist,
+                "prev": prev,
+                "steps": steps,
+                "explanation": explanation,
+                "execution_time": execution_time,
+                "source": self.orig_node,
+                "target": self.dest_node
+            }
 
-        # Highlight the path with enhanced styling
-        if path:
-            self.highlight_paths([path], width=HIGHLIGHT_EDGE_WIDTH)
+            # Highlight the path with enhanced styling
+            if path:
+                self.highlight_paths([path], width=HIGHLIGHT_EDGE_WIDTH)
 
-        return path, explanation
+            # Return the result tuple with path, explanation and the complete results for visualization
+            return path, explanation, self.algorithm_results["dijkstra"]
+
+        except Exception as e:
+            import traceback
+            print(f"Error in run_dijkstra: {e}")
+            print(traceback.format_exc())
+            raise
+
+    def run_bellman_ford(self):
+        """
+        Run Bellman-Ford algorithm and format the explanation.
+
+        Returns:
+            Tuple containing:
+                - path: List of nodes in the shortest path
+                - explanation: Text explanation of the algorithm steps
+                - details: Dictionary with detailed algorithm results for visualization
+        """
+        if not all([self.G_simple, self.orig_node, self.dest_node]):
+            raise RuntimeError("Graph not initialized")
+
+        try:
+            # Run Bellman-Ford with step tracking (now includes execution time)
+            result = PathAlgorithms.bellman_ford(
+                self.G_simple, self.orig_node, self.dest_node, self.weight)
+
+            # Unpack the returned values - handle both old and new return format
+            if result and len(result) == 4:
+                dist, prev, steps, execution_time = result
+            elif result and len(result) == 3:
+                # Handle the case where the old function is still being used
+                dist, prev, steps = result
+                execution_time = None
+            else:
+                # Handle case where result is invalid
+                dist, prev, steps, execution_time = None, None, [], None
+
+            # Check if a path was found (could be None if negative cycle was detected)
+            if dist is None or prev is None:
+                explanation = "Negative cycle detected in the graph. Cannot find shortest path."
+                path = []
+
+                # Store results with negative cycle indication
+                self.algorithm_results["bellman_ford"] = {
+                    "path": [],
+                    "dist": {},
+                    "prev": {},
+                    "steps": steps or [],
+                    "explanation": explanation,
+                    "execution_time": execution_time,
+                    "source": self.orig_node,
+                    "target": self.dest_node,
+                    "negative_cycle": True
+                }
+            else:
+                # Reconstruct path - handle potential errors
+                try:
+                    path = PathAlgorithms.reconstruct_path(prev, self.orig_node, self.dest_node)
+                except Exception as e:
+                    import traceback
+                    print(f"Error reconstructing path: {e}")
+                    print(traceback.format_exc())
+                    path = []
+
+                # Create sequential node IDs for the path
+                if path:
+                    try:
+                        self._create_sequential_node_ids(path)
+                    except Exception as e:
+                        print(f"Error creating sequential node IDs: {e}")
+                        # Continue without sequential IDs
+
+                # Generate explanation with node ID map and execution time
+                try:
+                    explanation = PathAlgorithms.format_steps_explanation(
+                        self.G_simple, steps, prev, self.orig_node, self.dest_node,
+                        node_id_map=self.node_id_map, execution_time=execution_time)
+                except Exception as e:
+                    import traceback
+                    print(f"Error formatting explanation: {e}")
+                    print(traceback.format_exc())
+                    explanation = f"Error generating explanation: {str(e)}"
+
+                # Store results
+                self.algorithm_results["bellman_ford"] = {
+                    "path": path,
+                    "dist": dist,
+                    "prev": prev,
+                    "steps": steps,
+                    "explanation": explanation,
+                    "execution_time": execution_time,
+                    "source": self.orig_node,
+                    "target": self.dest_node,
+                    "negative_cycle": False
+                }
+
+                # Highlight the path with enhanced styling - handle potential errors
+                if path:
+                    try:
+                        self.highlight_paths([path], width=HIGHLIGHT_EDGE_WIDTH)
+                    except Exception as e:
+                        print(f"Error highlighting paths: {e}")
+                        # Continue without highlighting
+
+            # Return the result tuple with path, explanation and the complete results for visualization
+            return path, explanation, self.algorithm_results["bellman_ford"]
+
+        except Exception as e:
+            import traceback
+            print(f"Error in run_bellman_ford: {e}")
+            print(traceback.format_exc())
+
+            # Create a graceful error response instead of crashing
+            path = []
+            explanation = f"Error running Bellman-Ford algorithm: {str(e)}"
+            error_results = {
+                "path": [],
+                "dist": {},
+                "prev": {},
+                "steps": [],
+                "explanation": explanation,
+                "execution_time": None,
+                "source": self.orig_node,
+                "target": self.dest_node,
+                "negative_cycle": False,
+                "error": str(e)
+            }
+            self.algorithm_results["bellman_ford"] = error_results
+
+            return path, explanation, error_results
+
+    def _get_manageable_edge_subset(self, G, source, target=None, max_edges=5000):
+        """Get a manageable subset of edges for large graphs to improve algorithm performance"""
+        if len(G.edges()) <= max_edges:
+            return list(G.edges())
+
+        # If graph is too large, prioritize edges near source and target
+        import networkx as nx
+
+        # Get nodes within a certain distance from source and target
+        source_neighbors = set(nx.ego_graph(G, source, radius=3))
+        target_neighbors = set(nx.ego_graph(G, target, radius=3)) if target else set()
+
+        # Prioritize edges between these nodes
+        priority_edges = []
+        other_edges = []
+
+        for u, v in G.edges():
+            if u in source_neighbors or u in target_neighbors or v in source_neighbors or v in target_neighbors:
+                priority_edges.append((u, v))
+            else:
+                other_edges.append((u, v))
+
+        # Take all priority edges plus some random edges up to max_edges
+        import random
+        if len(priority_edges) < max_edges:
+            # Add random edges up to max_edges
+            random.shuffle(other_edges)
+            remaining = max_edges - len(priority_edges)
+            return priority_edges + other_edges[:remaining]
+        else:
+            # If too many priority edges, take a random subset
+            random.shuffle(priority_edges)
+            return priority_edges[:max_edges]
